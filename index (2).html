@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Score Statistics (Python)</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1b1f27;--muted:#5d6675;--line:#dfe3ea;--accent:#2f6fed;--accent2:#e2701f;--bad:#c0392b;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1d2128;--text:#e8ebf0;--muted:#9aa3b2;--line:#2d333d;--accent:#6b9bff;--accent2:#f0944d;--bad:#ff7b6b;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.5rem;margin:0 0 4px}
+h2{font-size:1.05rem;margin:0 0 10px}
+.sub,.hint,.tag{color:var(--muted)}
+.sub{margin:0 0 16px}
+.hint{font-size:.85rem;margin-top:8px}
+.tag{font-size:.8rem;font-weight:400}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+label{font-weight:600;display:block;margin-bottom:6px}
+textarea{width:100%;min-height:90px;resize:vertical;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit;font-family:ui-monospace,Menlo,Consolas,monospace}
+.row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+button{padding:9px 16px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+button:disabled{opacity:.5;cursor:wait}
+#status{font-size:.85rem;color:var(--muted);margin-bottom:10px}
+#err{color:var(--bad);margin-top:8px;min-height:1.3em;font-weight:600}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stat{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px}
+.stat .k{color:var(--muted);font-size:.8rem}
+.stat .v{font-size:1.7rem;font-weight:700;word-break:break-all}
+.stat.big .v{color:var(--accent)}
+.heaps{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.heap{border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--bg)}
+.heap code{font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all;font-size:.9rem}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:320px}
+th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums}
+th{color:var(--muted);font-size:.85rem}
+tr.latest td{font-weight:700;color:var(--accent)}
+svg{width:100%;height:auto;display:block}
+</style>
+</head>
+<body>
+<main>
+<h1>Live Score Statistics</h1>
+<p class="sub">The median is computed by the project’s own Python code (max-heap + min-heap), running in your browser.</p>
+<div id="status">Loading Python… (needs an internet connection, about 10 seconds the first time)</div>
+
+<section class="card">
+<label for="inp">Scores (whole numbers separated by spaces, commas or new lines)</label>
+<textarea id="inp" placeholder="e.g. 5 1 9 3"></textarea>
+<div class="row">
+<button class="primary" id="add" disabled>Add scores</button>
+<button id="ex1" disabled>Example: 5 1 9 3</button>
+<button id="ex2" disabled>Example: unseen stream</button>
+<button id="reset" disabled>Reset</button>
+</div>
+<div id="err" role="alert"></div>
+<div class="hint">Scores accumulate until Reset. Range: −2,147,483,648 to 2,147,483,647. Maximum 100,000 scores. Ctrl+Enter also adds.</div>
+</section>
+
+<section class="card">
+<div class="stats">
+<div class="stat"><div class="k">Number of scores</div><div class="v" id="count">0</div></div>
+<div class="stat big"><div class="k">Latest median</div><div class="v" id="med">–</div></div>
+<div class="stat"><div class="k">Lower heap (max) top</div><div class="v" id="ltop">–</div></div>
+<div class="stat"><div class="k">Upper heap (min) top</div><div class="v" id="utop">–</div></div>
+</div>
+</section>
+
+<section class="card">
+<h2>The two heaps</h2>
+<div class="heaps">
+<div class="heap"><b>Lower half: max-heap <span class="tag" id="lsize"></span></b><br><code id="lheap">(empty)</code></div>
+<div class="heap"><b>Upper half: min-heap <span class="tag" id="usize"></span></b><br><code id="uheap">(empty)</code></div>
+</div>
+<div class="hint">Array order, index 0 first (the top). Odd count: median = lower top. Even count: average of the two tops.</div>
+</section>
+
+<section class="card">
+<h2>Median history <span class="tag" id="gnote"></span></h2>
+<div id="chart"></div>
+<div class="hint">Orange dots: scores. Blue line: running median.</div>
+</section>
+
+<section class="card">
+<h2>History table <span class="tag" id="tnote"></span></h2>
+<div class="scroll"><table><thead><tr><th>#</th><th>Score</th><th>Median</th></tr></thead><tbody id="rows"></tbody></table></div>
+</section>
+</main>
+
+<!-- The project's Python code. The browser does not run this block; Pyodide does. -->
+<script type="text/python" id="pycode">
+class Heap:
+    def __init__(self, is_max):
+        self.data = []
+        self.is_max = is_max
+
+    def better(self, a, b):
+        return a > b if self.is_max else a < b
+
+    def push(self, value):
+        self.data.append(value)
+        i = len(self.data) - 1
+        while i > 0:
+            p = (i - 1) // 2
+            if not self.better(self.data[i], self.data[p]):
+                break
+            self.data[i], self.data[p] = self.data[p], self.data[i]
+            i = p
+
+    def pop_root(self):
+        root = self.data[0]
+        last = self.data.pop()
+        if not self.data:
+            return root
+        self.data[0] = last
+        i = 0
+        n = len(self.data)
+        while 2*i+1 < n:
+            child = 2*i+1
+            right = child+1
+            if right < n and self.better(self.data[right], self.data[child]):
+                child = right
+            if not self.better(self.data[child], self.data[i]):
+                break
+            self.data[i], self.data[child] = self.data[child], self.data[i]
+            i = child
+        return root
+
+class Scoreboard:
+    def __init__(self):
+        self.lower = Heap(True)
+        self.upper = Heap(False)
+        self.low = self.lower.data
+        self.high = self.upper.data
+        self.history = []
+
+    def add(self, score):
+        if type(score) is not int or not -2**31 <= score < 2**31:
+            raise ValueError('Score must be a signed 32-bit integer')
+        if len(self.history) >= 100000:
+            raise ValueError('Maximum 100,000 scores reached')
+        if not self.low or score <= self.low[0]:
+            self.lower.push(score)
+        else:
+            self.upper.push(score)
+        if len(self.low) > len(self.high)+1:
+            self.upper.push(self.lower.pop_root())
+        elif len(self.high) > len(self.low):
+            self.lower.push(self.upper.pop_root())
+        m = self.median
+        self.history.append((len(self.history)+1, score, m))
+        return m
+
+    @property
+    def median(self):
+        if not self.low:
+            return None
+        if len(self.low) == len(self.high):
+            return (self.low[0]+self.high[0])/2
+        return self.low[0]
+
+import json
+
+LIMIT = 100000
+LOW, HIGH = -2**31, 2**31 - 1
+board = Scoreboard()
+
+
+def reset_board():
+    global board
+    board = Scoreboard()
+
+
+def add_scores(text):
+    """Validate everything first, then add. Returns '' or an error message."""
+    values = []
+    for tok in text.replace(",", " ").split():
+        try:
+            v = int(tok)
+        except ValueError:
+            return "'" + tok + "' is not a whole number."
+        if not LOW <= v <= HIGH:
+            return "'" + tok + "' is outside the 32-bit signed range."
+        values.append(v)
+    if not values:
+        return "Please enter at least one score."
+    if len(board.history) + len(values) > LIMIT:
+        return "Maximum 100,000 scores allowed."
+    for v in values:
+        board.add(v)
+    return ""
+
+
+def snapshot():
+    h = board.history
+    return json.dumps({
+        "count": len(h), "median": board.median,
+        "low": board.low[:16], "lowN": len(board.low),
+        "high": board.high[:16], "highN": len(board.high),
+        "history": h[-100:],
+    })
+
+</script>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const fmt=n=>n===null||n===undefined?"–":Number.isInteger(n)?n.toLocaleString("en-US"):n.toLocaleString("en-US",{minimumFractionDigits:1,maximumFractionDigits:1});
+const nums=(a,n)=>n?a.join(", ")+(n>a.length?", …":""):"(empty)";
+let py=null;
+
+async function init(){
+  try{
+    const pyodide=await loadPyodide();
+    await pyodide.runPythonAsync($("pycode").textContent);
+    py={add:pyodide.globals.get("add_scores"),reset:pyodide.globals.get("reset_board"),snap:pyodide.globals.get("snapshot")};
+    for(const id of ["add","ex1","ex2","reset"])$(id).disabled=false;
+    $("status").textContent="Python is ready.";
+    render();
+  }catch(e){
+    $("status").textContent="Could not load Python: "+e.message+". Check your internet connection and reload.";
+  }
+}
+function addScores(text){
+  const err=py.add(text);
+  $("err").textContent=err;
+  if(!err)$("inp").value="";
+  render();
+}
+function chart(h){
+  if(!h.length){$("chart").innerHTML='<p class="hint">No scores yet.</p>';$("gnote").textContent="";return;}
+  const W=900,H=260,P=34,view=h.slice(-60);
+  $("gnote").textContent=h.length>60?"(last 60 scores)":"";
+  let lo=Infinity,hi=-Infinity;
+  for(const[,s,m]of view){lo=Math.min(lo,s,m);hi=Math.max(hi,s,m);}
+  const span=hi-lo||1,n=view.length;
+  const x=i=>P+(n===1?(W-2*P)/2:i*(W-2*P)/(n-1));
+  const y=v=>H-P-(v-lo)/span*(H-2*P);
+  const line=view.map(([,,m],i)=>x(i).toFixed(1)+","+y(m).toFixed(1)).join(" ");
+  const dots=view.map(([,s],i)=>'<circle cx="'+x(i).toFixed(1)+'" cy="'+y(s).toFixed(1)+'" r="3.5" fill="var(--accent2)"/>').join("");
+  const mdots=view.map(([,,m],i)=>'<circle cx="'+x(i).toFixed(1)+'" cy="'+y(m).toFixed(1)+'" r="3" fill="var(--accent)"/>').join("");
+  $("chart").innerHTML='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Scores and running median">'+
+   '<line x1="'+P+'" y1="'+(H-P)+'" x2="'+(W-P)+'" y2="'+(H-P)+'" stroke="var(--line)"/>'+
+   '<text x="4" y="'+(P-14)+'" font-size="12" fill="var(--muted)">'+fmt(hi)+'</text>'+
+   '<text x="4" y="'+(H-P+4)+'" font-size="12" fill="var(--muted)">'+fmt(lo)+'</text>'+
+   dots+'<polyline points="'+line+'" fill="none" stroke="var(--accent)" stroke-width="2"/>'+mdots+'</svg>';
+}
+function render(){
+  const d=JSON.parse(py.snap());
+  $("count").textContent=d.count.toLocaleString("en-US");
+  $("med").textContent=fmt(d.median);
+  $("ltop").textContent=d.lowN?fmt(d.low[0]):"–";
+  $("utop").textContent=d.highN?fmt(d.high[0]):"–";
+  $("lheap").textContent=nums(d.low,d.lowN);$("uheap").textContent=nums(d.high,d.highN);
+  $("lsize").textContent="("+d.lowN+" items)";$("usize").textContent="("+d.highN+" items)";
+  const rows=d.history.slice().reverse();
+  $("rows").innerHTML=rows.map(([i,s,m],k)=>'<tr'+(k===0?' class="latest"':'')+'><td>'+i+'</td><td>'+fmt(s)+'</td><td>'+fmt(m)+'</td></tr>').join("");
+  $("tnote").textContent=d.count>100?"(latest 100 of "+d.count.toLocaleString("en-US")+", newest first)":d.count?"(newest first)":"";
+  chart(d.history);
+}
+$("add").onclick=()=>addScores($("inp").value);
+$("inp").addEventListener("keydown",e=>{if(py&&e.key==="Enter"&&(e.ctrlKey||e.metaKey))addScores($("inp").value);});
+$("ex1").onclick=()=>{py.reset();addScores("5 1 9 3");};
+$("ex2").onclick=()=>{py.reset();addScores("-7 -7 2147483647 0 -2147483648 42 42 42 -1 5");};
+$("reset").onclick=()=>{py.reset();$("inp").value="";$("err").textContent="";render();};
+init();
+</script>
+</body>
+</html>
